@@ -1,0 +1,386 @@
+---
+title: "Plotting for B117 paper (2021)"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+# Import libraries and main data set
+```{r}
+
+library(anytime)
+library(dplyr)
+library(ggplot2)
+library(maps)
+library(forcats)
+library(scales)
+
+# GISAID sequencing metadata - accessed 03/04/2021
+data <- read.csv("G:/My Drive/_grubaugh/B117 paper/resubmission/data/metadata.csv") 
+
+datafilt <- data[data$country == "USA" ,]
+datafilt$date <- anydate(datafilt$date)
+datafilt <- datafilt[ datafilt$date <= as.Date('2021-02-28') & datafilt$date >= as.Date('2020-12-01'), ]
+df <- data.frame(table(datafilt$division))
+df <- df[!(df$Var1 == "USA"),]
+
+# Caseload data from https://covidtracking.com/data
+cases <- read.csv("G:/My Drive/_grubaugh/B117 paper/resubmission/data/all-states-history.csv", header = T)
+cases <- cases[ cases$date <= as.Date("2021-02-28") & cases$date >= as.Date("2020-12-01"), ]
+cases <- cases %>% 
+  group_by(state) %>% 
+  mutate( total = sum(positiveIncrease, na.rm = T))
+cases <- cases[ , c("state", "total")]
+cases <- unique(cases)
+# converting state codes to full name
+temp <- read.csv("G:/My Drive/_grubaugh/B117 paper/csvData.csv", header = T)
+colnames(temp) <- c("name", "abbrev", "state")
+cases <- full_join(cases, temp[,c(1,3)])
+cases <- cases[complete.cases(cases),]
+# Remove Hawaii and Alaska - only doing analysis for continental US
+cases <- cases[ !(cases$name %in% c("Hawaii", "Alaska")), ]
+cases <- cases[ , c(3,2)]
+colnames(cases) <- c("State.Territory", "Total.Cases")
+
+
+
+# color scheme by Anderson Brito (legend Figure 2A and used throughout paper)
+colors <- read.table("G:/My Drive/_grubaugh/B117 paper/colour_scheme.txt", header = T, sep="\t" ,comment.char = "")
+colnames(colors) <- c("State.Territory", "Color")
+x <- full_join(colors, cases)
+x[x$State.Territory == as.factor("USA_avg") , 2] <- "#555555"
+x <- x[,1:2]
+x$State.Territory <- as.factor(x$State.Territory)
+col <- x$Color
+names(col) <- x$State.Territory
+
+
+```
+
+# function needed for plotting later
+```{r}
+squash_axis <- function(from, to, factor) { 
+  # A transformation function that squashes the range of [from, to] by factor on a given axis 
+
+  # Args:
+  #   from: left end of the axis
+  #   to: right end of the axis
+  #   factor: the compression factor of the range [from, to]
+  #
+  # Returns:
+  #   A transformation called "squash_axis", which is capsulated by trans_new() function
+
+  trans <- function(x) {    
+    # get indices for the relevant regions
+    isq <- x > from & x < to
+    ito <- x >= to
+
+    # apply transformation
+    x[isq] <- from + (x[isq] - from)/factor
+    x[ito] <- from + (to - from)/factor + (x[ito] - to)
+
+    return(x)
+  }
+
+  inv <- function(x) {
+
+    # get indices for the relevant regions
+    isq <- x > from & x < from + (to - from)/factor
+    ito <- x >= from + (to - from)/factor
+
+    # apply transformation
+    x[isq] <- from + (x[isq] - from) * factor
+    x[ito] <- to + (x[ito] - (from + (to - from)/factor))
+
+    return(x)
+  }
+
+  # return the transformation
+  return(scales::trans_new("squash_axis", trans, inv, domain = c(from, to)))
+}
+
+```
+
+
+# Figure 1 - airport data
+```{r}
+
+airport <- read.csv("G:/My Drive/_grubaugh/B117 paper/resubmission/data/Airport_traffic.csv", header = T) 
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/Fig1C_barplot.pdf")
+ggplot( airport , aes(x = reorder(Airport, -Number_passengers_Dec), y = Number_passengers_Dec))+
+  theme_bw()+
+  theme(axis.text.x = element_text(angle = 90, vjust = 1, hjust=1))+
+  geom_col()+
+  xlab("Airport")+ylab("Number of incoming passengers in Dec 2020")
+# dev.off()
+
+```
+# Figure 2A
+```{r}
+
+df <- data.frame(table(datafilt$division))
+colnames(df) <- c("State.Territory", "Total_Sequences")
+b117 <- datafilt[ datafilt$pangolin_lineage == "B.1.1.7", ]
+df2 <- data.frame(table(b117$division))
+colnames(df2) <- c("State.Territory", "B117_sequences")
+
+dfplot <- full_join(cases, df, by = "State.Territory")
+dfplot <- full_join(dfplot, df2, by = "State.Territory")
+dfplot$B117_sequences[is.na(dfplot$B117_sequences)] <- 0
+newline <- data.frame(State.Territory = "USA_avg",
+                      Total.Cases = mean(dfplot$Total.Cases, na.rm = T),
+                      Total_Sequences = mean(dfplot$Total_Sequences, na.rm = T),
+                      B117_sequences =  mean(dfplot$B117_sequences, na.rm = T) )
+dfplot <- bind_rows(dfplot, newline )
+dfplot$fraction <- dfplot$Total_Sequences / dfplot$Total.Cases
+dfplot <- dfplot[!is.na(dfplot$fraction),]
+dfplot$State.Territory <- reorder(dfplot$State.Territory, -dfplot$fraction)
+dfplot$State.Territory <- fct_relevel(dfplot$State.Territory, "USA_avg", after=Inf)
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/Fig1B.pdf", height = 12)
+ggplot(dfplot )+
+  geom_bar(aes(x = fraction*100, 
+               # y = reorder(State.Territory, -fraction), 
+               y = State.Territory,
+               fill = factor(State.Territory)) , 
+           stat = "identity")+
+  geom_point(aes( x = B117_sequences/40 , y = reorder(State.Territory, fraction)), 
+             color = "black",
+             size = 2)+
+  ylab("")+ theme_bw()+
+  scale_x_continuous( name = "Percent of total COVID-19 cases that have been sequenced", 
+                      sec.axis = (~.*40))+
+  scale_fill_manual(values = col)+
+  theme(legend.position = "none")
+# dev.off()
+
+```
+
+
+# Figure 2 B and C
+```{r}
+
+  
+# import flight data
+flight <- read.csv("G:/My Drive/_grubaugh/B117 paper/resubmission/data/Passengers per State from UK Dec 2020.csv", header = T)
+
+# convert state codes to full names
+temp <- read.csv("G:/My Drive/_grubaugh/B117 paper/csvData.csv", header = T)
+colnames(temp) <- c("name", "abbrev", "State")
+flight <- full_join(flight, temp[,c(1,3)])
+flight <- flight[complete.cases(flight),]
+flight <- flight[ !(flight$name %in% c("Hawaii", "Alaska")), ]
+flight <- flight[ , c(3,2)]
+colnames(flight) <- c("State", "Number_people")
+flight$State[ flight$State == "District of Columbia"] <- "Washington DC"
+colnames(df) <- c("State", "Number_cases")
+dfplot <- full_join(df, flight, by = "State")
+
+
+# Fig 2B
+# Use same data from Fig 2A for y-axis 
+proportion <- read.csv("G:/My Drive/_grubaugh/B117 paper/resubmission/tableS2B.csv", header = T)
+colnames(proportion) <- c("State", "Number_people", "fraction")
+proportion$fraction <- as.numeric(gsub("%", "", proportion$fraction))/100
+df <- full_join( dfplot, proportion[, c("State", "fraction")], by = "State")
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/percent_cases_vs_travelers.pdf", useDingbats = F)
+ggplot(df, aes(x = Number_people, y = fraction*100, color = State))+
+  geom_point( size = 5)+
+  geom_text( aes(label = ifelse( Number_people > 1500 , State, ''),
+                 hjust = -0.1, vjust = 0.3), size = 8)+
+  theme_bw()+ theme(legend.position = "none")+
+  xlab("Number of passengers arriving") + ylab("Percent of cases sequenced")+
+  scale_color_manual(values = col)+
+  geom_hline( yintercept = 0.4, linetype = "dashed" )+
+  geom_vline( xintercept = 2000, linetype = "dashed" )+
+  coord_trans(y = squash_axis(2, 15, 10))
+# dev.off()
+
+
+
+
+# Fig 2C - B117 cases vs incoming travel
+datafilt <- datafilt[ datafilt$pangolin_lineage == "B.1.1.7", ]
+df <- data.frame(table(datafilt$division))
+df <- df[!df$Var1 == "USA",]
+colnames(df) <- c("State", "Number_cases")
+dfplot <- full_join(df, flight, by = "State")
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/state_volume_b117_bigdots.pdf", useDingbats = F, width = 11)
+ggplot( dfplot, aes( x = Number_people, y = Number_cases, color = State ))+
+  geom_point( size = 5)+
+  theme(legend.position = "none")+
+  geom_text( aes(label = ifelse(Number_people > 1500  , State , "") ), hjust = -0.1, vjust = 0.3)+
+  scale_color_manual(values = col)+
+  xlab("Number of passengers arriving") + ylab("Number of B.1.1.7 SARS-CoV-2 sequences on GISAID")+
+  theme_bw()
+# dev.off()
+
+
+```
+
+
+
+# Figure 4 A and B
+```{r}
+sgtf <- read.csv("G:/My Drive/_grubaugh/B117 paper/resubmission/tables4A.csv", header = T)
+colnames(sgtf) <- c("state", "week", "total", "positive", "sgtf", "percent_positive", "percent_sgtf", "date")
+sgtf$week <- as.factor(sgtf$week)
+sgtf$date <- anydate(sgtf$date)
+
+fig3a <- ggplot(sgtf, aes(x = date, y = percent_positive*100, color = state))+
+  geom_point(size = 5)+
+  geom_line(size = 2)+
+  scale_color_manual(values = col)+
+  theme_bw()+
+  xlab("") + ylab("# Positive tests / # Total tests") + 
+  ggtitle("Percent positivity rate")
+
+
+fig3b <- ggplot(sgtf, aes(x = date, y = percent_sgtf*100, color = state))+
+  geom_point(size = 5)+
+  geom_line(size = 2)+
+  scale_color_manual(values = col)+
+  theme_bw()+
+  xlab("") + ylab("# SGTF / # Positive tests")+
+  ggtitle("Percent of positive tests that have SGTF")
+
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/fig3a.pdf", useDingbats = F, width = 9)
+print(fig3a)
+# dev.off()
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/fig3b.pdf", useDingbats = F, width = 9)
+print(fig3b)
+# dev.off()
+
+
+```
+# Figure 4C - modeling
+```{r}
+
+sgtf <- sgtf[ complete.cases(sgtf),]
+# week 2 serves an index because the model function doesn't work with date formats
+# Non-CT data has values for two weeks earlier than CT data
+sgtf$week2 <- c(3, 4, 5, 6, 7, 8, 9, 10, 11,12, 13, rep( c(1,2,3,4,5,6,7,8,9,10,11,12,13), 3))
+
+# Connecticut model
+df <- sgtf[ sgtf$state == "Connecticut", ]
+df$week2 <- seq(3,13)
+model_ct <- glm(percent_sgtf ~ week2, data = df, family = binomial)
+df_ct <- data.frame(week2 = seq(3,33))
+df_ct$predicted <- predict(model_ct, type = "response", newdata = df_ct)
+df_ct$state <- rep("Connecticut")
+
+# New Jersey model
+df <- sgtf[ sgtf$state == "New Jersey", ]
+df$week2 <- seq(1,13)
+model_nj <- glm(percent_sgtf ~ week2, data = df, family = binomial)
+df_nj <- data.frame(week2 = seq(1,30))
+df_nj$predicted <- predict(model_nj, type = "response", newdata = df_nj)
+df_nj$state <- rep("New Jersey")
+
+# New York model
+df <- sgtf[ sgtf$state == "New York", ]
+df$week2 <- seq(1,13)
+model_ny <- glm(percent_sgtf ~ week2, data = df, family = binomial)
+df_ny <- data.frame(week2 = seq(1,30))
+df_ny$predicted <- predict(model_ny, type = "response", newdata = df_ny)
+df_ny$state <- rep("New York")
+
+# Illinois model
+df <- sgtf[ sgtf$state == "Illinois", ]
+df$week2 <- seq(1,13)
+model_il <- glm(percent_sgtf ~ week2, data = df, family = binomial)
+df_il <- data.frame(week2 = seq(1,30))
+df_il$predicted <- predict(model_il, type = "response", newdata = df_il)
+df_il$state <- rep("Illinois")
+
+# combine results of all into a single dataframe
+dfplot <- bind_rows(df_ct, df_ny)
+dfplot <- bind_rows( dfplot, df_il)
+dfplot <- bind_rows(dfplot, df_nj)
+dfplot <- full_join( dfplot, sgtf[ , c("state", "week2", "percent_sgtf")], by = c("week2", "state"))
+# write.csv(dfplot, file = "G:/My Drive/_grubaugh/B117 paper/resubmission/tableS4C.csv", quote = F, row.names = F)
+
+
+```
+
+# Figure 4C plotting
+```{r}
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/log_curve_connecticut.pdf", useDingbats = F, width = 7, height = 7)
+ggplot(dfplot[ dfplot$state == "Connecticut",] )+
+  geom_line(aes(x = week2, y = predicted))+
+  geom_point( aes(x = week2, y = percent_sgtf))+
+  theme_bw()+
+  xlab("") + ylab("Percent S-gene target failure") +
+  ggtitle("Connecticut")
+# dev.off()
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/log_curve_illinois.pdf", useDingbats = F, width = 7, height = 7)
+ggplot(dfplot[ dfplot$state == "Illinois",] )+
+  geom_line(aes(x = week2, y = predicted))+
+  geom_point( aes(x = week2, y = percent_sgtf))+
+  theme_bw()+
+  xlab("") + ylab("Percent S-gene target failure") +
+  ggtitle("Illinois")
+# dev.off()
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/log_curve_newyork.pdf", useDingbats = F, width = 7, height = 7)
+ggplot(dfplot[ dfplot$state == "New York",] )+
+  geom_line(aes(x = week2, y = predicted))+
+  geom_point( aes(x = week2, y = percent_sgtf))+
+  theme_bw()+
+  xlab("") + ylab("Percent S-gene target failure") +
+  ggtitle("New York")
+# dev.off()
+
+# pdf("G:/My Drive/_grubaugh/B117 paper/resubmission/figures/log_curve_newjersey.pdf", useDingbats = F, width = 7, height = 7)
+ggplot(dfplot[ dfplot$state == "New Jersey",] )+
+  geom_line(aes(x = week2, y = predicted))+
+  geom_point( aes(x = week2, y = percent_sgtf))+
+  theme_bw()+
+  xlab("") + ylab("Percent S-gene target failure") +
+  ggtitle("New Jersey")
+# dev.off()
+
+```
+# get the date at which B117 cases are modeled to reach 50% and 75%
+```{r}
+
+
+findInt <- function(model, value) {
+  function(x) {
+    predict(model, data.frame(week2=x), type="response") - value
+  }
+}
+
+uniroot(findInt(model_ct, .50), range(df_ct$week2))$root
+uniroot(findInt(model_nj, .50), range(df_nj$week2))$root
+uniroot(findInt(model_ny, .50), range(df_ny$week2))$root
+uniroot(findInt(model_il, .50), range(df_il$week2))$root
+
+uniroot(findInt(model_ct, .75), range(df_ct$week2))$root
+uniroot(findInt(model_nj, .75), range(df_nj$week2))$root
+uniroot(findInt(model_ny, .75), range(df_ny$week2))$root
+uniroot(findInt(model_il, .75), range(df_il$week2))$root
+
+# 50% mark precise value = first day of the corresponding week
+# connecticut 15.44 = March 7th
+# new jersey 15.84 = March 7th
+# new york 17.26 = march 21
+# Illinois 18.29 = march 28th
+
+# 75% mark
+# connecticut 17.585 = march 21
+# new jersey 17.807 = march 21
+# new york 19.52 = April 4th
+# illinois 20.59 = April 11th
+
+
+```
+
+
